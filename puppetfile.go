@@ -14,6 +14,17 @@ import (
 	"golang.org/x/crypto/ssh/terminal"
 )
 
+var (
+	reInvalidCharacters = regexp.MustCompile("\\W")
+)
+
+type resolvCallbackFunc func(wg *sizedwaitgroup.SizedWaitGroup, branch, targetDir, source, workDir string, sa Source, puppetfileChan chan puppetfileContext)
+
+type puppetfileContext struct {
+	puppetfile  Puppetfile
+	environment string
+}
+
 // sourceSanityCheck is a validation function that checks if the given source has all necessary attributes (basedir, remote, SSH key exists if given)
 func sourceSanityCheck(source string, sa Source) {
 	if len(sa.PrivateKey) > 0 {
@@ -29,119 +40,191 @@ func sourceSanityCheck(source string, sa Source) {
 	}
 }
 
-func resolvePuppetEnvironment(envBranch string, tags bool, outputNameTag string) {
-	wg := sizedwaitgroup.New(config.MaxExtractworker + 1)
-	allPuppetfiles := make(map[string]Puppetfile)
-	for source, sa := range config.Sources {
-		wg.Add()
-		go func(source string, sa Source) {
-			defer wg.Done()
-			if force {
-				createOrPurgeDir(sa.Basedir, "resolvePuppetEnvironment()")
-			}
+func resolveSource(wg *sizedwaitgroup.SizedWaitGroup, branch, targetDir, source, workDir string, sa Source, puppetfileChan chan puppetfileContext) {
+	defer wg.Done()
 
-			sa.Basedir = checkDirAndCreate(sa.Basedir, "basedir for source "+source)
-			Debugf("Puppet environment: " + source + " (" + fmt.Sprintf("%+v", sa) + ")")
+	env := strings.Replace(strings.Replace(targetDir, sa.Basedir, "", 1), "/", "", -1)
+	syncToModuleDir(workDir, targetDir, branch, false, false, env)
+	if !fileExists(targetDir + "Puppetfile") {
+		Debugf("Skipping branch " + source + "_" + branch + " because " + targetDir + "Puppetfile does not exist")
+	} else {
+		puppetfile := readPuppetfile(targetDir+"/Puppetfile", sa.PrivateKey, source, sa.ForceForgeVersions, false)
+		puppetfile.workDir = normalizeDir(targetDir)
+		puppetfile.controlRepoBranch = branch
 
-			// check for a valid source that has all necessary attributes (basedir, remote, SSH key exist if given)
-			sourceSanityCheck(source, sa)
+		puppetfileChan <- puppetfileContext{puppetfile, env}
+	}
+}
 
-			workDir := config.EnvCacheDir + source + ".git"
-			// check if sa.Basedir exists
-			checkDirAndCreate(sa.Basedir, "basedir")
+func resolveVirtualEnv(wg *sizedwaitgroup.SizedWaitGroup, branch, targetDir, source, workDir string, sa Source, puppetfileChan chan puppetfileContext) {
+	defer wg.Done()
 
-			if success := doMirrorOrUpdate(sa.Remote, workDir, sa.PrivateKey, true, 1); success {
-
-				// get all branches
-				er := executeCommand("git --git-dir "+workDir+" branch", config.Timeout, false)
-				outputBranches := er.output
-				outputTags := ""
-
-				if tags == true {
-					er := executeCommand("git --git-dir "+workDir+" tag", config.Timeout, false)
-					outputTags = er.output
-				}
-
-				branches := strings.Split(strings.TrimSpace(outputBranches+outputTags), "\n")
-
-				foundBranch := false
-				for _, branch := range branches {
-					branch = strings.TrimLeft(branch, "* ")
-					reInvalidCharacters := regexp.MustCompile("\\W")
-					if sa.AutoCorrectEnvironmentNames == "error" && reInvalidCharacters.MatchString(branch) {
-						Warnf("Ignoring branch " + branch + ", because it contains invalid characters")
-						continue
-					}
-					// XXX: maybe make this user configurable (either with dedicated file or as YAML array in g10k config)
-					if strings.Contains(branch, ";") || strings.Contains(branch, "&") || strings.Contains(branch, "|") || strings.HasPrefix(branch, "tmp/") && strings.HasSuffix(branch, "/head") || (len(envBranch) > 0 && branch != envBranch) {
-						Debugf("Skipping branch " + branch)
-						continue
-					} else if len(envBranch) > 0 && branch == envBranch {
-						foundBranch = true
-					}
-
-					wg.Add()
-
-					go func(branch string) {
-						defer wg.Done()
-						if len(branch) != 0 {
-							Debugf("Resolving branch: " + branch)
-
-							renamedBranch := branch
-							if (len(outputNameTag) > 0) && (len(envBranch) > 0) {
-								renamedBranch = outputNameTag
-								Debugf("Renaming branch " + branch + " to " + renamedBranch)
-							}
-
-							if sa.AutoCorrectEnvironmentNames == "correct" || sa.AutoCorrectEnvironmentNames == "correct_and_warn" {
-								oldBranch := renamedBranch
-								renamedBranch = reInvalidCharacters.ReplaceAllString(renamedBranch, "_")
-								if sa.AutoCorrectEnvironmentNames == "correct_and_warn" {
-									Warnf("Renaming branch " + oldBranch + " to " + renamedBranch)
-								} else {
-									Debugf("Renaming branch " + oldBranch + " to " + renamedBranch)
-								}
-							}
-
-							targetDir := sa.Basedir + sa.Prefix + "_" + strings.Replace(renamedBranch, "/", "_", -1)
-							if sa.Prefix == "false" || sa.Prefix == "" {
-								targetDir = sa.Basedir + strings.Replace(renamedBranch, "/", "_", -1)
-							} else if sa.Prefix == "true" {
-								targetDir = sa.Basedir + source + "_" + strings.Replace(renamedBranch, "/", "_", -1)
-							}
-							targetDir = normalizeDir(targetDir)
-
-							env := strings.Replace(strings.Replace(targetDir, sa.Basedir, "", 1), "/", "", -1)
-							syncToModuleDir(workDir, targetDir, branch, false, false, env)
-							if !fileExists(targetDir + "Puppetfile") {
-								Debugf("Skipping branch " + source + "_" + branch + " because " + targetDir + "Puppetfile does not exist")
-							} else {
-								puppetfile := readPuppetfile(targetDir+"Puppetfile", sa.PrivateKey, source, sa.ForceForgeVersions, false)
-								puppetfile.workDir = normalizeDir(targetDir)
-								puppetfile.controlRepoBranch = branch
-								mutex.Lock()
-								allPuppetfiles[env] = puppetfile
-								mutex.Unlock()
-
-							}
-						}
-					}(branch)
-
-				}
-
-				if sa.WarnMissingBranch && !foundBranch {
-					Warnf("WARNING: Couldn't find specified branch '" + envBranch + "' anywhere in source '" + source + "' (" + sa.Remote + ")")
-				}
-			} else {
-				Warnf("WARNING: Could not resolve git repository in source '" + source + "' (" + sa.Remote + ")")
-				if sa.ExitIfUnreachable == true {
-					os.Exit(1)
-				}
-			}
-		}(source, sa)
+	if sa.FallbackLinkEnvironment == "" {
+		return
 	}
 
+	targetDir = strings.TrimRight(normalizeDir(targetDir), "/")
+
+	mutex.Lock()
+	defer mutex.Unlock()
+
+	isSymlink := isSymlink(targetDir)
+	if fileExists(targetDir) && !isSymlink {
+		Debugf("Skipping virtual environment " + branch + " because a real environment already exists")
+		return
+	}
+
+	// relink the file if it exists
+	if isSymlink {
+		err := os.Remove(targetDir)
+		if err != nil {
+			Fatalf("resolveVirtualEnvs(): could not remove old symlink: " + err.Error())
+		}
+	}
+
+	Debugf("Linking " + targetDir + " to " + sa.FallbackLinkEnvironment)
+	err := os.Symlink(sa.FallbackLinkEnvironment, targetDir)
+	if err != nil {
+		Fatalf("resolveVirtualEnvs(): could not link virtual environment: " + err.Error())
+	}
+}
+
+func resolveEnvs(wg *sizedwaitgroup.SizedWaitGroup, puppetfileChan chan puppetfileContext, source string, sa Source, envBranch string, tags bool, outputNameTag string, fn resolvCallbackFunc) {
+	defer wg.Done()
+
+	if force {
+		createOrPurgeDir(sa.Basedir, "resolvePuppetEnvironment()")
+	}
+
+	sa.Basedir = checkDirAndCreate(sa.Basedir, "basedir for source "+source)
+	Debugf("Puppet environment: " + source + " (" + fmt.Sprintf("%+v", sa) + ")")
+
+	// check for a valid source that has all necessary attributes (basedir, remote, SSH key exist if given)
+	sourceSanityCheck(source, sa)
+
+	workDir := config.EnvCacheDir + source + ".git"
+	// check if sa.Basedir exists
+	checkDirAndCreate(sa.Basedir, "basedir")
+
+	if success := doMirrorOrUpdate(sa.Remote, workDir, sa.PrivateKey, true, 1); success {
+		// get all branches
+		er := executeCommand("git --git-dir "+workDir+" branch", config.Timeout, false)
+		outputBranches := er.output
+		outputTags := ""
+
+		if tags {
+			er := executeCommand("git --git-dir "+workDir+" tag", config.Timeout, false)
+			outputTags = er.output
+		}
+
+		branches := strings.Split(strings.TrimSpace(outputBranches+outputTags), "\n")
+
+		foundBranch := false
+		for _, branch := range branches {
+			branch = strings.TrimLeft(branch, "* ")
+			if sa.AutoCorrectEnvironmentNames == "error" && reInvalidCharacters.MatchString(branch) {
+				Warnf("Ignoring branch " + branch + ", because it contains invalid characters")
+				continue
+			}
+			// XXX: maybe make this user configurable (either with dedicated file or as YAML array in g10k config)
+			if strings.ContainsAny(branch, ";&|") || strings.HasPrefix(branch, "tmp/") && strings.HasSuffix(branch, "/head") || (len(envBranch) > 0 && branch != envBranch) {
+				Debugf("Skipping branch " + branch)
+				continue
+			} else if len(envBranch) > 0 && branch == envBranch {
+				foundBranch = true
+			}
+
+			if len(branch) == 0 {
+				continue
+			}
+
+			Debugf("Resolving branch: " + branch)
+
+			renamedBranch := branch
+			if (len(outputNameTag) > 0) && (len(envBranch) > 0) {
+				renamedBranch = outputNameTag
+				Debugf("Renaming branch " + branch + " to " + renamedBranch)
+			}
+
+			if sa.AutoCorrectEnvironmentNames == "correct" || sa.AutoCorrectEnvironmentNames == "correct_and_warn" {
+				oldBranch := renamedBranch
+				renamedBranch = reInvalidCharacters.ReplaceAllString(renamedBranch, "_")
+				if sa.AutoCorrectEnvironmentNames == "correct_and_warn" {
+					Warnf("Renaming branch " + oldBranch + " to " + renamedBranch)
+				} else {
+					Debugf("Renaming branch " + oldBranch + " to " + renamedBranch)
+				}
+			}
+
+			targetDir := sa.Basedir + sa.Prefix + "_" + strings.Replace(renamedBranch, "/", "_", -1)
+			if sa.Prefix == "false" || sa.Prefix == "" {
+				targetDir = sa.Basedir + strings.Replace(renamedBranch, "/", "_", -1)
+			} else if sa.Prefix == "true" {
+				targetDir = sa.Basedir + source + "_" + strings.Replace(renamedBranch, "/", "_", -1)
+			}
+			targetDir = normalizeDir(targetDir)
+
+			wg.Add()
+			go fn(wg, branch, targetDir, source, workDir, sa, puppetfileChan)
+		}
+
+		if sa.WarnMissingBranch && !foundBranch {
+			Warnf("WARNING: Couldn't find specified branch '" + envBranch + "' anywhere in source '" + source + "' (" + sa.Remote + ")")
+		}
+	} else {
+		Warnf("WARNING: Could not resolve git repository in source '" + source + "' (" + sa.Remote + ")")
+		if sa.ExitIfUnreachable == true {
+			os.Exit(1)
+		}
+	}
+}
+
+func resolvePuppetEnvironment(envBranch string, tags bool, outputNameTag string) {
+	wg := sizedwaitgroup.New(config.MaxExtractworker + 1)
+	puppetfileChan := make(chan puppetfileContext)
+	allPuppetfiles := make(map[string]Puppetfile, len(config.Sources)+len(config.VirtualEnvironments))
+
+	// collect found Puppetfiles
+	done := make(chan struct{})
+	empty := make(chan struct{})
+	go func(done chan struct{}, empty <-chan struct{}) {
+		for {
+			select {
+			case <-empty:
+				for {
+					select {
+					case ctxt := <-puppetfileChan:
+						allPuppetfiles[ctxt.environment] = ctxt.puppetfile
+
+					default:
+						done <- struct{}{}
+						return
+					}
+				}
+
+			case ctxt := <-puppetfileChan:
+				allPuppetfiles[ctxt.environment] = ctxt.puppetfile
+			}
+		}
+	}(done, empty)
+
+	for source, sa := range config.Sources {
+		wg.Add()
+		go resolveEnvs(&wg, puppetfileChan, source, sa, envBranch, tags, outputNameTag, resolveSource)
+	}
 	wg.Wait()
+	empty <- struct{}{}
+
+	for source, sa := range config.VirtualEnvironments {
+		wg.Add()
+		go resolveEnvs(&wg, puppetfileChan, source, sa, envBranch, tags, outputNameTag, resolveVirtualEnv)
+	}
+	wg.Wait()
+	<-done
+
+	close(done)
+	close(empty)
+
 	//fmt.Println("allPuppetfiles: ", allPuppetfiles, len(allPuppetfiles))
 	//fmt.Println("allPuppetfiles[0]: ", allPuppetfiles["postinstall"])
 	resolvePuppetfile(allPuppetfiles)

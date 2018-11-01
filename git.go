@@ -126,11 +126,16 @@ func syncToModuleDir(srcDir string, targetDir string, tree string, allowFail boo
 	mutex.Lock()
 	syncGitCount++
 	mutex.Unlock()
+
 	if !isDir(srcDir) {
 		if config.UseCacheFallback {
 			Fatalf("Could not find cached git module " + srcDir)
 		}
 	}
+
+	needToSync := true
+	hashFile := targetDir + "/.latest_commit"
+
 	logCmd := "git --git-dir " + srcDir + " rev-parse --verify '" + tree
 	if config.GitObjectSyntaxNotSupported != true {
 		logCmd = logCmd + "^{object}'"
@@ -138,73 +143,77 @@ func syncToModuleDir(srcDir string, targetDir string, tree string, allowFail boo
 		logCmd = logCmd + "'"
 	}
 
-	er := executeCommand(logCmd, config.Timeout, allowFail)
-	hashFile := targetDir + "/.latest_commit"
-	needToSync := true
-	if er.returnCode != 0 {
-		if allowFail && ignoreUnreachable {
-			Debugf("Failed to populate module " + targetDir + " but ignore-unreachable is set. Continuing...")
-			purgeDir(targetDir, "syncToModuleDir, because ignore-unreachable is set for this module")
-		}
-		return false
-	}
-
-	if len(er.output) > 0 {
-		targetHash, _ := ioutil.ReadFile(hashFile)
-		if string(targetHash) == er.output {
-			needToSync = false
-			//Debugf("Skipping, because no diff found between " + srcDir + "(" + er.output + ") and " + targetDir + "(" + string(targetHash) + ")")
+	if !isSymlink(strings.TrimRight(normalizeDir(targetDir), "/")) {
+		er := executeCommand(logCmd, config.Timeout, allowFail)
+		if er.returnCode != 0 {
+			if allowFail && ignoreUnreachable {
+				Debugf("Failed to populate module " + targetDir + " but ignore-unreachable is set. Continuing...")
+				purgeDir(targetDir, "syncToModuleDir, because ignore-unreachable is set for this module")
+			}
+			return false
 		}
 
+		if len(er.output) > 0 {
+			targetHash, _ := ioutil.ReadFile(hashFile)
+			if string(targetHash) == er.output {
+				needToSync = false
+				//Debugf("Skipping, because no diff found between " + srcDir + "(" + er.output + ") and " + targetDir + "(" + string(targetHash) + ")")
+			}
+
+		}
 	}
-	if needToSync && er.returnCode == 0 {
-		Infof("Need to sync " + targetDir)
+
+	if !needToSync {
+		return true
+	}
+
+	Infof("Need to sync " + targetDir)
+	mutex.Lock()
+	needSyncDirs = append(needSyncDirs, targetDir)
+	if _, ok := needSyncEnvs[correspondingPuppetEnvironment]; !ok {
+		needSyncEnvs[correspondingPuppetEnvironment] = empty
+	}
+	needSyncGitCount++
+	mutex.Unlock()
+	if !dryRun {
+		createOrPurgeDir(strings.TrimRight(normalizeDir(targetDir), "/"), "syncToModuleDir()")
+		gitArchiveArgs := []string{"--git-dir", srcDir, "archive", tree}
+		cmd := exec.Command("git", gitArchiveArgs...)
+		Debugf("Executing git --git-dir " + srcDir + " archive " + tree)
+		cmdOut, err := cmd.StdoutPipe()
+		if err != nil {
+			if !allowFail {
+				Infof("Failed to populate module " + targetDir + " but ignore-unreachable is set. Continuing...")
+			} else {
+				return false
+			}
+			Fatalf("syncToModuleDir(): Failed to execute command: git --git-dir " + srcDir + " archive " + tree + " Error: " + err.Error())
+		}
+		cmd.Start()
+
+		before := time.Now()
+		unTar(cmdOut, targetDir)
+		duration := time.Since(before).Seconds()
 		mutex.Lock()
-		needSyncDirs = append(needSyncDirs, targetDir)
-		if _, ok := needSyncEnvs[correspondingPuppetEnvironment]; !ok {
-			needSyncEnvs[correspondingPuppetEnvironment] = empty
-		}
-		needSyncGitCount++
+		ioGitTime += duration
 		mutex.Unlock()
-		if !dryRun {
-			createOrPurgeDir(targetDir, "syncToModuleDir()")
-			gitArchiveArgs := []string{"--git-dir", srcDir, "archive", tree}
-			cmd := exec.Command("git", gitArchiveArgs...)
-			Debugf("Executing git --git-dir " + srcDir + " archive " + tree)
-			cmdOut, err := cmd.StdoutPipe()
-			if err != nil {
-				if !allowFail {
-					Infof("Failed to populate module " + targetDir + " but ignore-unreachable is set. Continuing...")
-				} else {
-					return false
-				}
-				Fatalf("syncToModuleDir(): Failed to execute command: git --git-dir " + srcDir + " archive " + tree + " Error: " + err.Error())
-			}
-			cmd.Start()
 
-			before := time.Now()
-			unTar(cmdOut, targetDir)
-			duration := time.Since(before).Seconds()
-			mutex.Lock()
-			ioGitTime += duration
-			mutex.Unlock()
+		err = cmd.Wait()
+		if err != nil {
+			Fatalf("syncToModuleDir(): Failed to execute command: git --git-dir " + srcDir + " archive " + tree + " Error: " + err.Error())
+		}
 
-			err = cmd.Wait()
-			if err != nil {
-				Fatalf("syncToModuleDir(): Failed to execute command: git --git-dir " + srcDir + " archive " + tree + " Error: " + err.Error())
-			}
+		Verbosef("syncToModuleDir(): Executing git --git-dir " + srcDir + " archive " + tree + " took " + strconv.FormatFloat(duration, 'f', 5, 64) + "s")
 
-			Verbosef("syncToModuleDir(): Executing git --git-dir " + srcDir + " archive " + tree + " took " + strconv.FormatFloat(duration, 'f', 5, 64) + "s")
-
-			er = executeCommand(logCmd, config.Timeout, false)
-			if len(er.output) > 0 {
-				Debugf("Writing hash " + er.output + " from command " + logCmd + " to " + hashFile)
-				f, _ := os.Create(hashFile)
-				defer f.Close()
-				f.WriteString(er.output)
-				f.Sync()
-			}
+		er := executeCommand(logCmd, config.Timeout, false)
+		if len(er.output) > 0 {
+			Debugf("Writing hash " + er.output + " from command " + logCmd + " to " + hashFile)
+			f, _ := os.Create(hashFile)
+			defer f.Close()
+			f.WriteString(er.output)
+			f.Sync()
 		}
 	}
+
 	return true
 }

@@ -73,14 +73,15 @@ type ConfigSettings struct {
 	Git                         Git
 	Forge                       Forge
 	Sources                     map[string]Source
-	Timeout                     int      `yaml:"timeout"`
-	IgnoreUnreachableModules    bool     `yaml:"ignore_unreachable_modules"`
-	Maxworker                   int      `yaml:"maxworker"`
-	MaxExtractworker            int      `yaml:"maxextractworker"`
-	UseCacheFallback            bool     `yaml:"use_cache_fallback"`
-	RetryGitCommands            bool     `yaml:"retry_git_commands"`
-	GitObjectSyntaxNotSupported bool     `yaml:"git_object_syntax_not_supported"`
-	PostRunCommand              []string `yaml:"postrun"`
+	VirtualEnvironments         map[string]Source `yaml:"virtual_environments"`
+	Timeout                     int               `yaml:"timeout"`
+	IgnoreUnreachableModules    bool              `yaml:"ignore_unreachable_modules"`
+	Maxworker                   int               `yaml:"maxworker"`
+	MaxExtractworker            int               `yaml:"maxextractworker"`
+	UseCacheFallback            bool              `yaml:"use_cache_fallback"`
+	RetryGitCommands            bool              `yaml:"retry_git_commands"`
+	GitObjectSyntaxNotSupported bool              `yaml:"git_object_syntax_not_supported"`
+	PostRunCommand              []string          `yaml:"postrun"`
 }
 
 // Forge is a simple struct that contains the base URL of
@@ -105,6 +106,7 @@ type Source struct {
 	WarnMissingBranch           bool   `yaml:"warn_if_branch_is_missing"`
 	ExitIfUnreachable           bool   `yaml:"exit_if_unreachable"`
 	AutoCorrectEnvironmentNames string `yaml:"invalid_branches"`
+	FallbackLinkEnvironment     string `yaml:"fallback_link_environment"`
 }
 
 // Puppetfile contains the key value pairs from the Puppetfile
@@ -245,6 +247,7 @@ func main() {
 			Debugf("Trying to use as Puppetfile: " + pfLocation)
 			sm := make(map[string]Source)
 			sm["cmdlineparam"] = Source{Basedir: "./"}
+			ve := make(map[string]Source)
 			cachedir := "/tmp/g10k"
 			if len(os.Getenv("g10k_cachedir")) > 0 {
 				cachedir = os.Getenv("g10k_cachedir")
@@ -257,7 +260,7 @@ func main() {
 				cachedir = checkDirAndCreate(cachedir, "cachedir default value")
 			}
 			forgeDefaultSettings := Forge{Baseurl: "https://forgeapi.puppetlabs.com"}
-			config = ConfigSettings{CacheDir: cachedir, ForgeCacheDir: cachedir, ModulesCacheDir: cachedir, EnvCacheDir: cachedir, Sources: sm, Forge: forgeDefaultSettings, Maxworker: maxworker, UseCacheFallback: usecacheFallback, MaxExtractworker: maxExtractworker, RetryGitCommands: retryGitCommands, GitObjectSyntaxNotSupported: gitObjectSyntaxNotSupported}
+			config = ConfigSettings{CacheDir: cachedir, ForgeCacheDir: cachedir, ModulesCacheDir: cachedir, EnvCacheDir: cachedir, Sources: sm, VirtualEnvironments: ve, Forge: forgeDefaultSettings, Maxworker: maxworker, UseCacheFallback: usecacheFallback, MaxExtractworker: maxExtractworker, RetryGitCommands: retryGitCommands, GitObjectSyntaxNotSupported: gitObjectSyntaxNotSupported}
 			target = pfLocation
 			puppetfile := readPuppetfile(target, "", "cmdlineparam", false, false)
 			puppetfile.workDir = "./"

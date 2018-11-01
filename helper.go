@@ -67,6 +67,16 @@ func fileExists(file string) bool {
 	return true
 }
 
+// isSymlink checks if the given file is a symlink
+func isSymlink(file string) bool {
+	fi, err := os.Lstat(file)
+	if os.IsNotExist(err) {
+		return false
+	}
+
+	return fi.Mode()&os.ModeSymlink != 0
+}
+
 // isDir checks if the given dir exists and returns a bool
 func isDir(dir string) bool {
 	fi, err := os.Stat(dir)
@@ -121,10 +131,7 @@ func createOrPurgeDir(dir string, callingFunction string) {
 			Debugf("Trying to create dir: " + dir + " called from " + callingFunction)
 			os.MkdirAll(dir, 0777)
 		} else {
-			Debugf("Trying to remove: " + dir + " called from " + callingFunction)
-			if err := os.RemoveAll(dir); err != nil {
-				log.Print("createOrPurgeDir(): error: removing dir failed", err)
-			}
+			purgeDir(dir, callingFunction)
 			Debugf("Trying to create dir: " + dir + " called from " + callingFunction)
 			os.MkdirAll(dir, 0777)
 		}
@@ -134,6 +141,11 @@ func createOrPurgeDir(dir string, callingFunction string) {
 func purgeDir(dir string, callingFunction string) {
 	if !fileExists(dir) {
 		Debugf("Unnecessary to remove dir: " + dir + " it does not exist. Called from " + callingFunction)
+	} else if isSymlink(dir) {
+		Debugf("Trying to remove: " + dir + " called from " + callingFunction)
+		if err := os.Remove(dir); err != nil {
+			log.Print("purgeDir(): os.Remove() error: removing symlink failed: ", err)
+		}
 	} else {
 		Debugf("Trying to remove: " + dir + " called from " + callingFunction)
 		if err := os.RemoveAll(dir); err != nil {
