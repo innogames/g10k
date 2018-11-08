@@ -105,6 +105,8 @@ type Source struct {
 	WarnMissingBranch           bool   `yaml:"warn_if_branch_is_missing"`
 	ExitIfUnreachable           bool   `yaml:"exit_if_unreachable"`
 	AutoCorrectEnvironmentNames string `yaml:"invalid_branches"`
+	VirtualEnvironmentParent    string `yaml:"virtual_environment_parent"`
+	VirtualEnvironmentBranch    string `yaml:"virtual_environment_branch"`
 }
 
 // Puppetfile contains the key value pairs from the Puppetfile
@@ -170,11 +172,11 @@ func init() {
 }
 
 func main() {
-
 	var (
 		configFileFlag = flag.String("config", "", "which config file to use")
 		versionFlag    = flag.Bool("version", false, "show build time and version number")
 	)
+
 	flag.StringVar(&branchParam, "branch", "", "which git branch of the Puppet environment to update, e.g. core_foobar")
 	flag.BoolVar(&tags, "tags", false, "to pull tags as well as branches")
 	flag.StringVar(&outputNameParam, "outputname", "", "overwrite the environment name if -branch is specified")

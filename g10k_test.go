@@ -160,7 +160,6 @@ func TestResolvConfigAddWarning(t *testing.T) {
 }
 
 func TestResolvStatic(t *testing.T) {
-
 	path, err := exec.LookPath("hashdeep")
 	if err != nil {
 		t.Skip("Skipping full Puppet environment resolv test, because package hashdeep is missing")

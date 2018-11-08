@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"regexp"
@@ -97,6 +98,21 @@ func readConfigfile(configFile string) ConfigSettings {
 
 	if maxExtractworker == 0 && config.MaxExtractworker == 0 {
 		config.MaxExtractworker = 20
+	}
+
+	// validate virtual sources
+	for name, s := range config.Sources {
+		if s.VirtualEnvironmentBranch != "" && s.VirtualEnvironmentParent == "" {
+			Fatalf("readConfigfile(): " + fmt.Sprintf("Virtual branch set for %s but no parent given", name))
+		}
+
+		if s.VirtualEnvironmentParent == "" {
+			continue
+		}
+
+		if _, ok := config.Sources[s.VirtualEnvironmentParent]; !ok {
+			Fatalf("readConfigfile(): " + fmt.Sprintf("Parent %s for virtual source %s is not configured", s.VirtualEnvironmentParent, name))
+		}
 	}
 
 	return config

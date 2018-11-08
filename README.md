@@ -398,6 +398,34 @@ sources:
     basedir: '/tmp/example/'
 ```
 
+- Support for "virtual" sources without needing to specify a prefix when they overlap
+
+It might be the case that you have a control repository and multiple modules which branches you also want to have deployed as Puppet environments to ease your development workflow when dealing with many shared repositories.
+You might want to use the `prefix` config to prefix the environment name with the source name. But that can be really inconvenient if you have changes across multiple repositories that need to be applied and tested together.
+
+With this feature you have the possibility to deloy all branches from all repositories even if they don't exist in the main source, falling back to it and deploying a specific branch instead but keeping the environment name from the "virtual source".
+
+Example:
+```
+---
+:cachedir: '/tmp/g10k'
+
+sources:
+  example:
+    remote: 'https://github.com/xorpaul/g10k-environment.git'
+    basedir: '/tmp/example/'
+    invalid_branches: 'correct'
+
+  another_example:
+    remote: 'https://github.com/xorpaul/g10k-environment.git'
+    basedir: '/tmp/example/'
+    invalid_branches: 'correct'
+    virtual_environment_parent: example
+```
+In `another_example` we specify `example` to be the parent source, which shall be used to checkout the source if the branch doesn't exist there. For example if `awesome_feature` is available in `another_example` but not in `example`, it would create an environment `awesome_feature` and takes the code from the parent source, with the fallback specified in the Puppetfile. If `awesome_feature` already exists in the main source, it does not fail but ignores the "virtual source" then.
+
+This nicely integrates with the `link` and `fallback` features from the `Puppetfile`. It would then try to find the branch `awesome_feature` in the specified modules and otherwise fall back as specified.
+
 # building
 ```
 # only initially needed to resolve all dependencies
