@@ -237,10 +237,10 @@ func main() {
 		config = readConfigfile(configFile)
 		target = configFile
 		if len(branchParam) > 0 {
-			resolvePuppetEnvironment(branchParam, tags, outputNameParam)
+			resolvePuppetEnvironment(branchParam, tags, outputNameParam, moduleParam)
 			target += " with branch " + branchParam
 		} else {
-			resolvePuppetEnvironment("", tags, "")
+			resolvePuppetEnvironment("", tags, "", moduleParam)
 		}
 	} else {
 		if pfMode {

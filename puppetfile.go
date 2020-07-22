@@ -38,24 +38,38 @@ func sourceSanityCheck(source string, sa Source) {
 	}
 }
 
-func resolvePuppetEnvironment(envBranch string, tags bool, outputNameTag string) {
+func resolvePuppetEnvironment(envBranch string, tags bool, outputNameTag, module string) {
 	wg := sizedwaitgroup.New(config.MaxExtractworker + 1)
 	allPuppetfiles := make(map[string]Puppetfile)
 
 	// real environments go first
-	puppetfiles := resolve(&wg, envBranch, outputNameTag, tags, allPuppetfiles, func(sa Source) bool {
+	puppetfiles := resolve(&wg, envBranch, outputNameTag, tags, allPuppetfiles, func(source string, sa Source) bool {
 		return sa.VirtualEnvironmentParent != ""
 	})
 	for env, puppetfile := range puppetfiles {
 		allPuppetfiles[env] = puppetfile
 	}
 
-	// now resolve virtual environments
-	puppetfiles = resolve(&wg, envBranch, outputNameTag, tags, allPuppetfiles, func(sa Source) bool {
-		return sa.VirtualEnvironmentParent == ""
-	})
-	for env, puppetfile := range puppetfiles {
-		allPuppetfiles[env] = puppetfile
+	// if branch does not exist in "real" environments try to specifically query the matching module next.
+	// depending on the amount of git modules we could otherwise overload the git server.
+	// if we can't find the branch there either we will fall back to query them all
+	if len(allPuppetfiles) == 0 && module != "" && envBranch != "" {
+		puppetfiles = resolve(&wg, envBranch, outputNameTag, tags, allPuppetfiles, func(source string, sa Source) bool {
+			return source != module
+		})
+		for env, puppetfile := range puppetfiles {
+			allPuppetfiles[env] = puppetfile
+		}
+	}
+
+	// now resolve all virtual environments if nothing was found until now
+	if len(allPuppetfiles) == 0 || envBranch == "" {
+		puppetfiles = resolve(&wg, envBranch, outputNameTag, tags, allPuppetfiles, func(source string, sa Source) bool {
+			return sa.VirtualEnvironmentParent == ""
+		})
+		for env, puppetfile := range puppetfiles {
+			allPuppetfiles[env] = puppetfile
+		}
 	}
 
 	for env, puppetfile := range allPuppetfiles {
@@ -78,7 +92,7 @@ func resolvePuppetEnvironment(envBranch string, tags bool, outputNameTag string)
 }
 
 // resolve sources in parallel
-func resolve(wg *sizedwaitgroup.SizedWaitGroup, envBranch, outputNameTag string, tags bool, realEnvs map[string]Puppetfile, skipFn func(Source) bool) map[string]Puppetfile {
+func resolve(wg *sizedwaitgroup.SizedWaitGroup, envBranch, outputNameTag string, tags bool, realEnvs map[string]Puppetfile, skipFn func(string, Source) bool) map[string]Puppetfile {
 	puppetfiles := make(map[string]Puppetfile)
 
 	// synchronisation
@@ -114,7 +128,7 @@ func resolve(wg *sizedwaitgroup.SizedWaitGroup, envBranch, outputNameTag string,
 
 	// resolve virtual sources in parallel afterwards
 	for source, sa := range config.Sources {
-		if skipFn(sa) {
+		if skipFn(source, sa) {
 			continue
 		}
 
