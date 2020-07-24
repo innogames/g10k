@@ -388,7 +388,7 @@ func resolvePuppetfile(allPuppetfiles map[string]Puppetfile) {
 				continue
 			}
 			wg.Add()
-			go func(gitName string, gitModule GitModule) {
+			go func(env, moduleDir, gitName, envBranch, basedir string, gitModule GitModule) {
 				defer wg.Done()
 				targetDir := normalizeDir(moduleDir + gitName)
 				//fmt.Println("targetDir: " + targetDir)
@@ -463,7 +463,7 @@ func resolvePuppetfile(allPuppetfiles map[string]Puppetfile) {
 					}
 				}
 				mutex.Unlock()
-			}(gitName, gitModule)
+			}(env, moduleDir, gitName, envBranch, basedir, gitModule)
 		}
 		for forgeModuleName, fm := range pf.forgeModules {
 			wg.Add()
