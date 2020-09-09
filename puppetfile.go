@@ -286,7 +286,17 @@ func resolvePuppetfile(allPuppetfiles map[string]Puppetfile) {
 		//fmt.Println(pf)
 		for gitName, gitModule := range pf.gitModules {
 			if len(moduleParam) > 0 {
-				if gitName != moduleParam {
+				exists := false
+				for _, moduleDir := range pf.moduleDirs {
+					modDir := normalizeDir(pf.workDir + moduleDir + gitName)
+					if _, err := os.Stat(modDir); !os.IsNotExist(err) {
+						exists = true
+					}
+				}
+
+				if !exists {
+					Debugf("Keeping git module " + gitName + ", because module " + gitName + " does not exist, yet")
+				} else if gitName != moduleParam {
 					Debugf("Skipping git module " + gitName + ", because parameter -module is set to " + moduleParam)
 					delete(pf.gitModules, gitName)
 					continue
